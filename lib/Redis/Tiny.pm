@@ -75,7 +75,7 @@ sub command {
     }
     my $res = $self->read_message($cmds) or return;
     return $res->[0] if $cmds == 1;
-    $res;
+    @$res;
 }
 
 sub read_message {
@@ -91,6 +91,9 @@ sub read_message {
             return $self->last_error('incorrect protocol message');
         }
         last if ( @msgs >= $requires );
+        if ( $len > 0 ) {
+            $self->{sockbuf} = substr($self->{sockbuf},0,$len);
+        }
         $self->{do_select} = 1;
     }
     return \@msgs;
