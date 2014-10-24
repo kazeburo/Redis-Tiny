@@ -12,6 +12,7 @@ use Redis;
 my $redis = Redis->new;
 my $fast = Redis::Fast->new;
 my $tiny = Redis::Tiny->new;
+my $tiny_noreply = Redis::Tiny->new(noreply=>1);
 
 $tiny->command(qw!set foo foovalue!);
 say $fast->get('foo');
@@ -55,7 +56,7 @@ cmpthese(
         },
         tiny_noreply => sub {
             for (1..10) {
-                $tiny->command(qw/incr incrfoo/);
+                $tiny_noreply->command(qw/incr incrfoo/);
             }
         },
         redis => sub {
@@ -93,7 +94,7 @@ cmpthese(
         },
         tiny_noreply => sub {
             for (1..10) {
-                $tiny->command(
+                $tiny_noreply->command(
                     [qw/del user-fail/],
                     [qw/del ip-fail/],
                     [qw/lpush user-log xxxxxxxxxxx/],

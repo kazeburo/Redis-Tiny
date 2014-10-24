@@ -8,6 +8,8 @@ use IO::Socket qw(:crlf IPPROTO_TCP TCP_NODELAY);
 use IO::Socket::INET;
 use IO::Select;
 use Time::HiRes qw/time/;
+use Redis::Request::XS;
+use Redis::Parser::XS;
 
 our $VERSION = "0.01";
 our $READ_BYTES = 131072;
@@ -20,6 +22,7 @@ sub new {
         timeout => 10,
         last_error => '',
         utf8 => 0,
+        noreply => 0,
         %args,
     );
     my $server = shift;
@@ -53,6 +56,7 @@ sub last_error {
     return $self->{last_error};
 }
 
+my $dummy_buf='';
 sub command {
     my $self = shift;
     return unless @_;
@@ -60,38 +64,18 @@ sub command {
     if ( ref $_[0] eq 'ARRAY' ) {
         $cmds = @_;
     }
-    my $sended = $self->send_message(@_) or return;
-    if ( ! defined wantarray ) {
-        my $timeout = $self->{timeout};
-        sysread $self->{sock}, my $buf, $READ_BYTES, 0;
+    my $msg = $self->{utf8} 
+        ? build_request_redis_utf8(@_)
+        : build_request_redis(@_);
+    my $sended = $self->write_all($msg) 
+        or $self->last_error('failed to send message: '. (($!) ? "$!" : "timeout") );
+    if ( $self->{noreply} ) {
+        sysread $self->{sock}, $dummy_buf, $READ_BYTES, 0;
         return $sended;
     }
     my $res = $self->read_message($cmds) or return;
     return $res->[0] if $cmds == 1;
     $res;
-}
-
-sub send_message {
-    my $self = shift;
-    return unless @_;
-    my $msg='';
-    if ( ref $_[0] eq 'ARRAY') {
-        for my $msgs ( @_ ) {
-            $msg .= '*'.scalar(@$msgs).$CRLF;
-            for my $m (@$msgs) {
-                utf8::encode($m) if $self->{utf8};
-                $msg .= '$'.length($m).$CRLF.$m.$CRLF;
-            }
-        }        
-    }
-    else {
-        $msg .= '*'.scalar(@_).$CRLF;
-        for my $m (@_) {
-            utf8::encode($m) if $self->{utf8};
-            $msg .= '$'.length($m).$CRLF.$m.$CRLF;
-        }
-    }
-    $self->write_all($msg) or $self->last_error('failed to send message: '. (($!) ? "$!" : "timeout") );
 }
 
 sub read_message {
@@ -101,92 +85,15 @@ sub read_message {
     my @msgs;
     $self->{do_select} = 1;
     while (1) {
-        while ( my $msg = $self->parse_reply(\$self->{sockbuf}) ) {
-            push @msgs, $msg if defined $msg;
+        my $len = parse_redis($self->{sockbuf}, \@msgs);
+        if ( ! defined $len ) {
+            return $self->last_error('incorrect protocol message');
         }
         last if ( @msgs >= $requires );
         $self->read_timeout(\$self->{sockbuf}, $READ_BYTES, length $self->{sockbuf})
             or return $self->last_error('failed to read message: ' . (($!) ? "$!" : "timeout"));
     }
     return \@msgs;
-}
-
-sub parse_reply {
-    my $self = shift;
-    my $buf = shift;
-
-    return if length($$buf) < 2;
-    my $first_crlf = index($$buf, $CRLF);
-    $first_crlf -= 1;
-    return if $first_crlf < 0;
-    my $s = substr($$buf,0,1, '');
-    my $first_val = substr($$buf, 0, $first_crlf, '');
-    substr($$buf, 0, 2, '');
-    if ( $s eq '+' ) {
-        # 1 line reply
-        utf8::decode($first_val) if $self->{utf8};
-        return { data => $first_val };
-    }
-    elsif ( $s eq '-' ) {
-        # error
-        # -ERR unknown command 'a'
-        return { data => undef, error => $first_val };
-    }
-    elsif ( $s eq ':' ) {
-        # numeric
-        # :1404956783
-        return { data => $first_val };
-    }
-    elsif ( $s eq '$' ) {
-        # bulk
-        # C: get mykey
-        # S: $3
-        # S: foo
-        my $size = $first_val;
-        if ( $size eq '-1' ) {
-            return { data => undef };
-        }
-        return if length($$buf) < $size + 2;
-        my $data = substr($$buf, 0, $size+2,'');
-        $data = substr($data,0,$size);
-        utf8::decode($data) if $self->{utf8};
-        return { data => $data };
-    }
-    elsif ( $s eq '*' ) {
-        # multibulk
-        # *3
-        # $3
-        # foo
-        # $-1
-        # $3
-        # baa
-        #
-        ## null list/timeout
-        # *-1
-        #
-        my $size = $first_val;
-        if ( $size eq '-1' ) {
-            return { data => undef };
-        }
-        return { data => [] } if $size eq '0';
-        my @res;
-        while ( @res < $size ) {
-            return unless ( $$buf =~ m!^\$(-?\d+?)$CRLF!sm );
-            my $length = $1;
-            substr($$buf, 0, length($length)+3,'');
-            if ( $length eq '-1' ) {
-                push @res, undef;
-                next;
-            }
-            return if length($$buf) < $length + 2;
-            my $data = substr($$buf, 0, $length,'');
-            substr($$buf, 0, 2,'');
-            utf8::decode($data) if $self->{utf8};
-            push @res, $data;
-        }
-        return { data => \@res };
-    }
-    die "failed parse_reply $$buf===\n";
 }
 
 sub read_timeout {
