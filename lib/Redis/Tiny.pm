@@ -7,7 +7,7 @@ use POSIX qw(EINTR EAGAIN EWOULDBLOCK :sys_wait_h);
 use IO::Socket qw(:crlf IPPROTO_TCP TCP_NODELAY);
 use IO::Socket::INET;
 use IO::Select;
-use Encode;
+use Time::HiRes qw/time/;
 
 our $VERSION = "0.01";
 our $READ_BYTES = 131072;
@@ -20,7 +20,6 @@ sub new {
         timeout => 10,
         last_error => '',
         utf8 => 0,
-        noreply => 0,
         %args,
     );
     my $server = shift;
@@ -62,7 +61,7 @@ sub command {
         $cmds = @_;
     }
     my $sended = $self->send_message(@_) or return;
-    if ( $self->{noreply} ) {
+    if ( ! defined wantarray ) {
         my $timeout = $self->{timeout};
         sysread $self->{sock}, my $buf, $READ_BYTES, 0;
         return $sended;
@@ -81,8 +80,7 @@ sub send_message {
             $msg .= '*'.scalar(@$msgs).$CRLF;
             for my $m (@$msgs) {
                 utf8::encode($m) if $self->{utf8};
-                $msg .= '$'.length($m).$CRLF;
-                $msg .= $m.$CRLF;
+                $msg .= '$'.length($m).$CRLF.$m.$CRLF;
             }
         }        
     }
@@ -90,8 +88,7 @@ sub send_message {
         $msg .= '*'.scalar(@_).$CRLF;
         for my $m (@_) {
             utf8::encode($m) if $self->{utf8};
-            $msg .= '$'.length($m).$CRLF;
-            $msg .= $m.$CRLF;
+            $msg .= '$'.length($m).$CRLF.$m.$CRLF;
         }
     }
     $self->write_all($msg) or $self->last_error('failed to send message: '. (($!) ? "$!" : "timeout") );
