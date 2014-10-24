@@ -12,6 +12,7 @@ use Redis;
 my $redis = Redis->new;
 my $fast = Redis::Fast->new;
 my $tiny = Redis::Tiny->new;
+my $tiny_noreply = Redis::Tiny->new(noreply=>1);
 
 $tiny->command(qw!set foo foovalue!);
 say $fast->get('foo');
@@ -32,6 +33,32 @@ cmpthese(
         redis => sub {
             for (1..10) {
                 my $data = $redis->get('foo');
+            }
+        },
+    }
+);
+
+cmpthese(
+    -1,
+    {
+        fast => sub {
+            for (1..10) {
+                my $val = $fast->incr('incrfoo');
+            }
+        },
+        tiny => sub {
+            for (1..10) {
+                my $data = $tiny->command(qw/incr incrfoo/);
+            }
+        },
+        tiny_noreply => sub {
+            for (1..10) {
+                my $data = $tiny_noreply->command(qw/incr incrfoo/);
+            }
+        },
+        redis => sub {
+            for (1..10) {
+                my $data = $redis->incr('incrfoo');
             }
         },
     }

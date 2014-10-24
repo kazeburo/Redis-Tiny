@@ -20,6 +20,7 @@ sub new {
         timeout => 10,
         last_error => '',
         utf8 => 0,
+        noreply => 0,
         %args,
     );
     my $server = shift;
@@ -60,7 +61,12 @@ sub command {
     if ( ref $_[0] eq 'ARRAY' ) {
         $cmds = @_;
     }
-    $self->send_message(@_) or return;
+    my $sended = $self->send_message(@_) or return;
+    if ( $self->{noreply} ) {
+        my $timeout = $self->{timeout};
+        sysread $self->{sock}, my $buf, $READ_BYTES, 0;
+        return $sended;
+    }
     my $res = $self->read_message($cmds) or return;
     return $res->[0] if $cmds == 1;
     $res;
