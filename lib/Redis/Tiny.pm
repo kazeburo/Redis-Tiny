@@ -83,15 +83,15 @@ sub read_message {
     my $requires = shift // 1;
     $self->{sockbuf} = '';
     my @msgs;
-    $self->{do_select} = 1;
     while (1) {
+        $self->read_timeout(\$self->{sockbuf}, $READ_BYTES, length $self->{sockbuf})
+            or return $self->last_error('failed to read message: ' . (($!) ? "$!" : "timeout"));
         my $len = parse_redis($self->{sockbuf}, \@msgs);
         if ( ! defined $len ) {
             return $self->last_error('incorrect protocol message');
         }
         last if ( @msgs >= $requires );
-        $self->read_timeout(\$self->{sockbuf}, $READ_BYTES, length $self->{sockbuf})
-            or return $self->last_error('failed to read message: ' . (($!) ? "$!" : "timeout"));
+        $self->{do_select} = 1;
     }
     return \@msgs;
 }
