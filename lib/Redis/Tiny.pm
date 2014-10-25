@@ -38,7 +38,7 @@ sub connect {
         PeerAddr => $self->{server},
         Timeout => $self->{timeout},
     ) or return;
-    $socket->blocking(0);
+    $socket->blocking(0) or die $!;
     $socket->setsockopt(IPPROTO_TCP, TCP_NODELAY, 1)
         or die "setsockopt(TCP_NODELAY) failed:$!";
     $self->{sock} = $socket;
@@ -64,11 +64,11 @@ sub command {
     if ( ref $_[0] eq 'ARRAY' ) {
         $cmds = @_;
     }
-    my $msg = $self->{utf8} 
-        ? build_request_redis_utf8(@_)
-        : build_request_redis(@_);
-    my $sended = $self->write_all($msg) 
-        or $self->last_error('failed to send message: '. (($!) ? "$!" : "timeout") );
+    my $sended = send_request_redis(
+        $self->{fileno} || fileno($self->connect),
+        $self->{timeout},
+        @_
+    ) or $self->last_error('failed to send message: '. (($!) ? "$!" : "timeout") );
     if ( $self->{noreply} ) {
         sysread $self->{sock}, $dummy_buf, $READ_BYTES, 0;
         return $sended;
@@ -102,7 +102,7 @@ sub read_message {
 sub read_timeout {
     my ($self, $buf, $len, $off) = @_;
     my $ret;
-    my $sock = $self->connect or return;
+    my $sock = ($self->{sock} ||=  $self->connect) or return;
     my $timeout = $self->{timeout};
     goto WAIT_READ if delete $self->{do_select};
  DO_READ:
@@ -117,50 +117,15 @@ sub read_timeout {
         my $efd = '';
         vec($efd, $self->{fileno}, 1) = 1;
         my ($rfd, $wfd) = ($efd, '');
-        my $start_at = time;
+        #my $start_at = time;
         my $nfound = select($rfd, $wfd, $efd, $timeout);
-        $timeout -= (time - $start_at);
+        #$timeout -= (time - $start_at);
         last if $nfound;
-        return if $timeout <= 0;
+        #return if $timeout <= 0;
     }
     goto DO_READ;
 }
 
-sub write_timeout {
-    my ($self, $buf, $len, $off) = @_;
-    my $ret;
-    my $sock = $self->connect or return;
-    my $timeout = $self->{timeout};
- DO_WRITE:
-    $ret = syswrite $sock, $buf, $len, $off
-        and return $ret;
-    unless ((! defined($ret)
-                 && ($! == EINTR || $! == EAGAIN || $! == EWOULDBLOCK))) {
-        return;
-    }
-    while (1) {
-        my $efd = '';
-        vec($efd, $self->{fileno}, 1) = 1;
-        my ($rfd, $wfd) = ($efd, '');
-        my $start_at = time;
-        my $nfound = select($rfd, $wfd, $efd, $timeout);
-        $timeout -= (time - $start_at);
-        last if $nfound;
-        return if $timeout <= 0;
-    }
-    goto DO_WRITE;
-}
-
-sub write_all {
-    my ($self, $buf) = @_;
-    my $off = 0;
-    while (my $len = length($buf) - $off) {
-        my $ret = $self->write_timeout($buf, $len, $off)
-            or return;
-        $off += $ret;
-    }
-    return length $buf;
-}
 
 
 1;
