@@ -9,7 +9,6 @@ use IO::Socket::INET;
 use IO::Select;
 use Time::HiRes qw/time/;
 use Redis::Request::XS;
-use Redis::Parser::XS;
 
 our $VERSION = "0.01";
 our $READ_BYTES = 131072;
@@ -64,18 +63,22 @@ sub command {
     if ( ref $_[0] eq 'ARRAY' ) {
         $cmds = @_;
     }
+    my $fileno = $self->{fileno} || fileno($self->connect);
     my $sended = send_request_redis(
-        $self->{fileno} || fileno($self->connect),
+        $fileno,
         $self->{timeout},
         @_
     ) or $self->last_error('failed to send message: '. (($!) ? "$!" : "timeout") );
     if ( $self->{noreply} ) {
-        sysread $self->{sock}, $dummy_buf, $READ_BYTES, 0;
-        return $sended;
+        Redis::Request::XS::phantom_read_redis($fileno);
+        return "0 but true";
     }
-    my $res = $self->read_message($cmds) or return;
-    return $res->[0] if $cmds == 1;
-    @$res;
+    my @res;
+    my $res = Redis::Request::XS::read_message_redis($fileno, $self->{timeout}, \@res, $cmds);
+    ( $res == -1 ) and return $self->last_error('failed to read message: message corruption');
+    ( $res == -2 ) and return $self->last_error('failed to read message: '. (($!) ? "$!" : "timeout"));
+    return $res[0] if $cmds == 1;
+    @res;
 }
 
 sub read_message {
@@ -86,7 +89,7 @@ sub read_message {
     while (1) {
         $self->read_timeout(\$self->{sockbuf}, $READ_BYTES, length $self->{sockbuf})
             or return $self->last_error('failed to read message: ' . (($!) ? "$!" : "timeout"));
-        my $len = parse_redis($self->{sockbuf}, \@msgs);
+        my $len = Redis::Request::XS::parse_reply($self->{sockbuf}, \@msgs);
         if ( ! defined $len ) {
             return $self->last_error('incorrect protocol message');
         }
